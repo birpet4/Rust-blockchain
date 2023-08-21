@@ -62,7 +62,7 @@ impl Blockchain {
         Blockchain {
             chain: blocks,
             difficulty: self.difficulty,
-            pending_transactions: self.pending_transactions,
+            pending_transactions: self.pending_transactions.clone(),
         }
     }
 

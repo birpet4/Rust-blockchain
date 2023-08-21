@@ -35,7 +35,7 @@ async fn main() {
     }
 
     // Start the server (this should keep running to listen for incoming connections)
-    networking::start_server(blockchain.clone()).await;
+    let server_handle = tokio::spawn(networking::start_server(blockchain.clone()));
 
     // The following is just for displaying. If this isn't required, remove it.
     {
@@ -65,4 +65,6 @@ async fn main() {
         let blockchain_guard = blockchain.lock().await;
         println!("Is chain valid? {}", blockchain_guard.is_chain_valid());
     }
+
+    let _ = server_handle.await;
 }
