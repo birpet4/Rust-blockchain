@@ -1,10 +1,11 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::transaction::Transaction;
 
 const DIFFICULTY: usize = 4; // Adjust to your desired difficulty
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Block {
     pub index: u32,
     pub timestamp: i64,

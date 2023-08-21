@@ -1,14 +1,19 @@
 mod block;
 mod blockchain;
-mod transaction;
+pub mod messages;
+mod networking;
+mod transaction; // Declare the modules
 
 use blockchain::Blockchain;
 use chrono::prelude::*;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use transaction::Transaction;
 
-fn main() {
-    // Create a new blockchain
-    let mut blockchain = Blockchain::new();
+#[tokio::main]
+async fn main() {
+    // Create a shared blockchain
+    let blockchain = Arc::new(Mutex::new(Blockchain::new()));
 
     // Create a few transactions
     let transaction1 = Transaction {
@@ -22,30 +27,42 @@ fn main() {
         amount: 25.0,
     };
 
-    // Add blocks containing the transactions to the blockchain
-    blockchain.add_block(vec![transaction1]);
-    blockchain.add_block(vec![transaction2]);
-
-    // Print the blockchain to verify its contents
-    for block in &blockchain.chain {
-        println!("Index: {}", block.index);
-        println!(
-            "Timestamp: {}",
-            Utc.timestamp_opt(block.timestamp, 0).unwrap().to_string()
-        );
-        println!("Nonce: {}", block.nonce);
-        println!("Previous Hash: {}", block.previous_hash);
-        println!("Hash: {}", block.hash);
-
-        for transaction in &block.transactions {
-            println!(
-                "  Transaction: {} -> {} : {}",
-                transaction.sender, transaction.receiver, transaction.amount
-            );
-        }
-        println!("------------------");
+    // Add blocks containing the transactions to the shared blockchain
+    {
+        let mut blockchain_guard = blockchain.lock().await;
+        blockchain_guard.add_block(vec![transaction1.clone()]);
+        blockchain_guard.add_block(vec![transaction2.clone()]);
     }
 
-    // You could also add code here to test the validity of the chain, etc.
-    println!("Is chain valid? {}", blockchain.is_chain_valid());
+    // Start the server (this should keep running to listen for incoming connections)
+    networking::start_server(blockchain.clone()).await;
+
+    // The following is just for displaying. If this isn't required, remove it.
+    {
+        let blockchain_guard = blockchain.lock().await;
+        for block in &blockchain_guard.chain {
+            println!("Index: {}", block.index);
+            println!(
+                "Timestamp: {}",
+                Utc.timestamp_opt(block.timestamp, 0).unwrap().to_string()
+            );
+            println!("Nonce: {}", block.nonce);
+            println!("Previous Hash: {}", block.previous_hash);
+            println!("Hash: {}", block.hash);
+
+            for transaction in &block.transactions {
+                println!(
+                    "  Transaction: {} -> {} : {}",
+                    transaction.sender, transaction.receiver, transaction.amount
+                );
+            }
+            println!("------------------");
+        }
+    }
+
+    // Again, just for displaying.
+    {
+        let blockchain_guard = blockchain.lock().await;
+        println!("Is chain valid? {}", blockchain_guard.is_chain_valid());
+    }
 }

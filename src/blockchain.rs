@@ -1,9 +1,12 @@
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::{block::Block, transaction::Transaction};
-
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Blockchain {
     pub chain: Vec<Block>,
+    pending_transactions: Vec<Transaction>,
+    difficulty: usize,
 }
 
 impl Blockchain {
@@ -13,12 +16,21 @@ impl Blockchain {
         let genesis_block = Blockchain::create_genesis_block();
         chain.push(genesis_block);
 
-        Blockchain { chain }
+        Blockchain {
+            chain,
+            pending_transactions: vec![],
+            difficulty: 4,
+        }
     }
 
     fn create_genesis_block() -> Block {
         // Define the genesis block with index 0 and a hardcoded previous hash
         Block::new(0, 0, 0, String::from("0"), Vec::new())
+    }
+
+    pub fn add_transaction(&mut self, transaction: Transaction) {
+        // TODO: Add validation
+        self.pending_transactions.push(transaction);
     }
 
     pub fn add_block(&mut self, transactions: Vec<Transaction>) {
@@ -44,6 +56,14 @@ impl Blockchain {
             }
         }
         true
+    }
+
+    pub fn from(&self, blocks: Vec<Block>) -> Self {
+        Blockchain {
+            chain: blocks,
+            difficulty: self.difficulty,
+            pending_transactions: self.pending_transactions,
+        }
     }
 
     // You can add other methods like mining, resolving conflicts, etc., here
