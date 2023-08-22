@@ -1,95 +1,167 @@
 use crate::blockchain::Blockchain;
 use crate::messages::Message;
+use crate::custom_error::CustomError;
+
 use std::sync::Arc;
+use once_cell::sync::Lazy;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex
 };
 
+pub static PEERS: Lazy<Arc<Mutex<Vec<String>>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(Vec::new()))
+});
 
-#[derive(Debug)]
-pub struct CustomError {
-    message: String,
+pub async fn add_peer(address: String) {
+    let mut peers = PEERS.lock().await;
+    if !peers.contains(&address) {
+        peers.push(address);
+    }
 }
 
-impl CustomError {
-    pub fn new(msg: &str) -> Self {
-        CustomError {
-            message: msg.to_string(),
+pub async fn get_peers() -> Vec<String> {
+    let peers = PEERS.lock().await;
+    peers.clone()
+}
+
+pub async fn connect_to_peers() {
+    let peers = get_peers().await;
+    for peer in peers {
+        if let Err(err) = try_connect_peer(&peer).await {
+            eprintln!("Failed to connect to {}: {}", peer, err);
         }
     }
 }
 
-impl std::fmt::Display for CustomError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
+async fn try_connect_peer(address: &str) -> Result<(), CustomError> {
+    let mut stream = TcpStream::connect(address).await?;
+    // You might want to send a special handshake message or just request the blockchain
+    let message = Message::RequestBlockchain;
+    let serialized_message = serde_json::to_string(&message)?;
+    stream.write_all(serialized_message.as_bytes()).await?;
+    Ok(())
 }
 
-impl std::error::Error for CustomError {}
-
-impl From<std::io::Error> for CustomError {
-    fn from(error: std::io::Error) -> Self {
-        CustomError::new(&error.to_string())
-    }
-}
-
-impl From<serde_json::Error> for CustomError {
-    fn from(error: serde_json::Error) -> Self {
-        CustomError::new(&error.to_string())
-    }
-}
-
-// Add more conversions as required
 
 
-pub async fn start_server(blockchain: Arc<Mutex<Blockchain>>) -> Result<(), CustomError> {
-    let listener = TcpListener::bind("0.0.0.0:8000").await?;
+pub async fn start_server(port: String, blockchain: Arc<Mutex<Blockchain>>) -> Result<(), CustomError> {
+    let address = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(address).await?;
     loop {
         let (stream, _) = listener.accept().await?;
         let blockchain_clone = blockchain.clone(); // Clone the Arc
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, blockchain_clone).await {
-                // Here you handle the error, e.g., by logging it.
                 eprintln!("Error handling connection: {}", e);
             }
         });
     }
 }
 
+pub async fn write_message(stream: &mut TcpStream, message: &Message) -> Result<(), CustomError> {
+    let serialized_message = serde_json::to_string(&message)?;
+    stream.write_all(serialized_message.as_bytes()).await?;
+    Ok(())
+}
 
-async fn handle_connection(
+// Responsible for managing the communication with another node (peer) in the P2P network once a connection is established. 
+// This communication is centered around messages, and the content and type of each message dictate the action taken.
+// Throughout this function, the shared instance of the blockchain is accessed using the Arc and Mutex wrappers to ensure safe concurrent access across multiple threads/tasks.
+pub async fn handle_connection(
     mut stream: TcpStream,
     blockchain: Arc<Mutex<Blockchain>>,
 ) -> Result<(), CustomError> {
-    // Create a buffer to read data into
-    let mut buffer = [0; 1024];
 
-    // Read data from the connection
+    // Reads incoming data from the connection stream into the buffer. n is the number of bytes read.
+    let mut buffer = [0; 1024];
     let n = stream.read(&mut buffer).await?;
 
-    // Deserialize the received data into a Message
+
+    // Gets the address of the remote peer (i.e., the node you're communicating with) and adds it to the list of known peers.
+    let remote_addr = stream.peer_addr().unwrap().to_string();
+    add_peer(remote_addr).await;
+
+    // Converts the incoming bytes into a Message type using serde_json for deserialization.
     let message: Message = serde_json::from_slice(&buffer[0..n])?;
 
-    // Process the message
     match message {
+        // If the incoming message is a request for the blockchain, this part sends back the entire blockchain to the requester.
         Message::RequestBlockchain => {
             let blockchain_data = blockchain.lock().await;
             let serialized_blockchain = serde_json::to_string(&*blockchain_data)?;
             stream.write_all(serialized_blockchain.as_bytes()).await?;
-        }
+        },
+
+        // If another peer sends its blockchain, this part checks if the received blockchain is valid and longer than the current blockchain. 
+        // If both conditions are met, it replaces the current blockchain with the received one.
         Message::SendBlockchain(blocks) => {
             let mut blockchain_data = blockchain.lock().await;
-            blockchain_data.chain = blocks;
-        }
+            let received_blockchain = Blockchain::from(&blockchain_data, blocks);
+            if received_blockchain.is_chain_valid() && received_blockchain.chain.len() > blockchain_data.chain.len() {
+                blockchain_data.chain = received_blockchain.chain;
+                println!("Blockchain replaced with a longer valid chain from a peer.");
+            }
+        },
+
+        // Upon receiving a new transaction, the transaction is added to a new block (this may not be the best approach in a real-world scenario, but it works for the sake of this example).
+        // After adding, it broadcasts this transaction to all known peers.
         Message::NewTransaction(transaction) => {
             let mut blockchain_data = blockchain.lock().await;
-            blockchain_data.add_transaction(transaction); // Add the new transaction to the blockchain
+            blockchain_data.add_block(vec![transaction.clone()]);
+
+            for peer_address in &blockchain_data.peers {
+                if let Ok(mut peer_stream) = TcpStream::connect(peer_address).await {
+                    write_message(&mut peer_stream, &Message::BroadcastTransaction(transaction.clone())).await?;
+                }
+            }
+        },
+
+        // If a transaction is being broadcasted from another peer, this code validates the transaction. 
+        // If valid, it's added to the transaction pool and then re-broadcasted to all other known peers.
+        Message::BroadcastTransaction(transaction) => {
+            let mut blockchain_data = blockchain.lock().await;
+        
+            // 1. Validate the transaction
+            if blockchain_data.validate_transaction(&transaction) {
+                // 2. Add the transaction to the transaction pool
+                blockchain_data.pending_transactions.push(transaction.clone());
+        
+                // 3. Broadcast the transaction to all other known peers
+                for peer_address in &blockchain_data.peers {
+                    if peer_address != &stream.peer_addr().unwrap().to_string() { // Avoid sending back to the sender
+                        if let Ok(mut peer_stream) = TcpStream::connect(peer_address).await {
+                            write_message(&mut peer_stream, &Message::BroadcastTransaction(transaction.clone())).await?;
+                        }
+                    }
+                }
+            }
+        },
+
+        // When a block is broadcasted from another peer, this code attempts to add the block's transactions to the blockchain. 
+        // If successful, the block is then broadcasted to all other peers.
+        Message::BroadcastBlock(block) => {
+            let mut blockchain_data = blockchain.lock().await;
+                // Extract transactions from the block
+            let transactions = block.transactions.clone();
+
+            match blockchain_data.add_block(transactions) {
+                Ok(_) => {
+                    // Broadcast the block to all other known peers
+                    for peer_address in &blockchain_data.peers {
+                        if peer_address != &stream.peer_addr().unwrap().to_string() { 
+                            if let Ok(mut peer_stream) = TcpStream::connect(peer_address).await {
+                                write_message(&mut peer_stream, &Message::BroadcastBlock(block.clone())).await?;
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Failed to add block: {}", err);
+                }
+            }
         }
     }
-
-    // Close the connection or handle other messages as required.
-    // For simplicity, this example closes the connection after processing one message.
     Ok(())
 }

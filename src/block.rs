@@ -5,6 +5,8 @@ use crate::transaction::Transaction;
 
 const DIFFICULTY: usize = 4; // Adjust to your desired difficulty
 
+
+// Represents individual blocks in the blockchain
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Block {
     pub index: u32,

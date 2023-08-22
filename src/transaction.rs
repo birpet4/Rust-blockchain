@@ -10,5 +10,19 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    // You can define methods related to the transaction here
+    pub fn verify(&self) -> bool {
+        // Check if amount is positive
+        if self.amount <= 0.0 {
+            return false;
+        }
+
+        // Check if sender and receiver are not empty and are different
+        if self.sender.is_empty() || self.receiver.is_empty() || self.sender == self.receiver {
+            return false;
+        }
+
+        // TODO: Add more checks if needed.
+
+        true
+    }
 }
