@@ -26,16 +26,21 @@ async fn main() {
     }
 
     let port = args[1].clone();
-    let port_clone = port.clone();
+    let port_for_server = port.clone(); // Clone for the server
+    let port_for_peers = port.clone(); // Clone for the peers
+
     // Start the server (this should keep running to listen for incoming connections)
-    let server_handle = tokio::spawn(networking::start_server(port, blockchain.clone()));
+    let server_handle = tokio::spawn(networking::start_server(
+        port_for_server,
+        blockchain.clone(),
+    ));
 
     // Use a timer to periodically attempt connections to known peers
     let peer_connection_handle = tokio::spawn(async move {
         const PEER_REFRESH_INTERVAL: u64 = 60; // Example: Try to connect to peers every 60 seconds.
 
         loop {
-            connect_to_peers(port_clone).await;
+            connect_to_peers(port_for_peers.clone()).await;
             sleep(Duration::from_secs(PEER_REFRESH_INTERVAL)).await;
         }
     });
