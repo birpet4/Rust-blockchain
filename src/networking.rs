@@ -3,7 +3,7 @@ use crate::custom_error::CustomError;
 use crate::messages::Message;
 
 use once_cell::sync::Lazy;
-use std::sync::Arc;
+use std::{sync::Arc, collections::HashSet};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -18,6 +18,8 @@ pub static PEERS: Lazy<Arc<Mutex<Vec<String>>>> = Lazy::new(|| {
     Arc::new(Mutex::new(initial_peers))
 });
 
+pub static ACTIVE_PEERS: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
+
 pub async fn add_peer(address: String) {
     let mut peers = PEERS.lock().await;
     if !peers.contains(&address) {
@@ -26,14 +28,16 @@ pub async fn add_peer(address: String) {
 }
 
 pub async fn get_peers() -> Vec<String> {
-    let peers = PEERS.lock().await;
+    let peers: tokio::sync::MutexGuard<'_, Vec<String>> = PEERS.lock().await;
     peers.clone()
 }
 
 pub async fn connect_to_peers(current_node_address: String) {
     let peers = get_peers().await;
+    let active_peers = ACTIVE_PEERS.lock().await;
+
     for peer in peers {
-        if peer != current_node_address {
+        if peer != current_node_address && !active_peers.contains(&peer) {
             if let Err(err) = try_connect_peer(&peer).await {
                 eprintln!("Failed to connect to {}: {}", peer, err);
             }
@@ -43,6 +47,14 @@ pub async fn connect_to_peers(current_node_address: String) {
 
 pub async fn try_connect_peer(address: &str) -> Result<(), CustomError> {
     let mut stream = TcpStream::connect(address).await?;
+
+    // Logging a successful connection
+    println!("Successfully connected to peer: {}", address);
+
+    // Add to the active peers list
+    let mut active_peers = ACTIVE_PEERS.lock().await;
+    active_peers.insert(address.to_string());
+
     let message = Message::RequestBlockchain;
     let serialized_message = serde_json::to_string(&message)?;
     stream.write_all(serialized_message.as_bytes()).await?;
@@ -83,9 +95,9 @@ pub async fn handle_connection(
     let mut buffer = [0; 1024];
     let n = stream.read(&mut buffer).await?;
 
-    // Gets the address of the remote peer (i.e., the node you're communicating with) and adds it to the list of known peers.
-    let remote_addr = stream.peer_addr().unwrap().to_string();
-    add_peer(remote_addr).await;
+    // // Gets the address of the remote peer (i.e., the node you're communicating with) and adds it to the list of known peers.
+    // let remote_addr = stream.peer_addr().unwrap().to_string();
+    // add_peer(remote_addr).await;
 
     // Converts the incoming bytes into a Message type using serde_json for deserialization.
     let message: Message = serde_json::from_slice(&buffer[0..n])?;

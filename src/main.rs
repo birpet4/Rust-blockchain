@@ -40,7 +40,8 @@ async fn main() {
         const PEER_REFRESH_INTERVAL: u64 = 60; // Example: Try to connect to peers every 60 seconds.
 
         loop {
-            connect_to_peers(port_for_peers.clone()).await;
+            let current_node_address = format!("127.0.0.1:{}", port_for_peers.clone());
+            connect_to_peers(current_node_address).await;
             sleep(Duration::from_secs(PEER_REFRESH_INTERVAL)).await;
         }
     });
